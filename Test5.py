@@ -2,6 +2,7 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 import torch.nn as nn
+#import torch.functional as F
 BATCH_SIZE=512
 EPOCHS=20
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,15 +32,15 @@ class CNN(nn.Module):
     def forward(self,x):
         in_size = x.size(0)
         out = self.conv1(x)
-        out = F.relu(out)
-        out = F.max_pool2d(out, 2, 2)
+        out = nn.ReLU(out)
+        out = nn.MaxPool2d(out, 2, 2)
         out = self.conv2(out)
-        out = F.relu(out)
+        out = nn.relu(out)
         out = out.view(in_size,-1)
         out = self.fc1(out)
-        out = F.relu(out)
+        out = nn.relu(out)
         out = self.fc2(out)
-        out = F.log_softmax(out,dim=1)
+        out = nn.log_softmax(out,dim=1)
         return out
 
 model = CNN().to(DEVICE)
@@ -51,7 +52,7 @@ def train(model, device, train_loader, optimizer, epoch):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = F.nll_loss(output, target)
+        loss = nn.nll_loss(output, target)
         loss.backward()
         optimizer.step()
         if(batch_idx+1)%30 == 0:
@@ -67,7 +68,7 @@ def test(model, device, test_loader):
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()
+            test_loss += nn.nll_loss(output, target, reduction='sum').item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
 
