@@ -9,8 +9,7 @@ from torchvision import datasets, transforms
 
 import syft as sy  # <-- NEW: import the Pysyft library
 
-
-class Arguments():
+class Args():
     def __init__(self):
         self.batch_size = 64
         self.test_batch_size = 1000
@@ -30,35 +29,41 @@ bob = sy.VirtualWorker(hook, id="bob")
 alice = sy.VirtualWorker(hook, id="alice")
 
 # 配置参数
-args = Arguments()
+args = Args()
 # 使用cuda
 use_cuda = not args.no_cuda and torch.cuda.is_available()
 torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
-# 设置worker
-kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+flag = torch.cuda.is_available()
+if flag:
+    print("CUDA可使用")
+else:
+    print("CUDA不可用")
 
-# 联邦数据，数据分布在不同工作节点上
+# 经常报错
+#kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+
+
 federated_train_loader = sy.FederatedDataLoader(
     datasets.MNIST('../data', train=True, download=True,
                    transform=transforms.Compose([transforms.ToTensor(),
                                                  transforms.Normalize((0.1307,), (0.3081,))
                                                  ]))
     .federate((bob, alice)),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
+    batch_size=args.batch_size, shuffle=True)
 
 test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=False,
                    transform=transforms.Compose([transforms.ToTensor(),
                                                  transforms.Normalize((0.1307,), (0.3081,))
                                                  ])),
-    batch_size=args.test_batch_size, shuffle=True, **kwargs)
+    batch_size=args.test_batch_size, shuffle=True)
 
 
-# 深度网络结构
-class Net(nn.Module):
+
+class CNN(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
+        super(CNN, self).__init__()
         self.conv1 = nn.Conv2d(1, 20, 5, 1)
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4 * 4 * 50, 500)
@@ -75,22 +80,17 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=1)
 
 
-# 训练
+
 def train(args, model, device, federated_train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(federated_train_loader):
-        # 把模型发给联邦学习节点
         model.send(data.location)
         data, target = data.to(device), target.to(device)
-        # 把grad清零
         optimizer.zero_grad()
         output = model(data)
-        # 计算损失
         loss = F.nll_loss(output, target)
-        # 计算梯度
         loss.backward()
         optimizer.step()
-        # 从远程节点更新模型
         model.get()
         if batch_idx % args.log_interval == 0:
             loss = loss.get()
@@ -99,8 +99,7 @@ def train(args, model, device, federated_train_loader, optimizer, epoch):
                        100. * batch_idx / len(federated_train_loader), loss.item()))
 
 
-# 测试
-def test(args, model, device, test_loader):
+def test(model, device, test_loader):
     model.eval()
     test_loss = 0
     correct = 0
@@ -118,15 +117,13 @@ def test(args, model, device, test_loader):
         100. * correct / len(test_loader.dataset)))
 
 
-if __name__ == '__main__':
-    # 模型初始化
-    model = Net().to(device)
-    # 优化器
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
-    # 求解
-    for epoch in range(1, args.epochs + 1):
-        train(args, model, device, federated_train_loader, optimizer, epoch)
-        test(args, model, device, test_loader)
-    # 训练结果存盘
-    if (args.save_model):
-        torch.save(model.state_dict(), "mnist_cnn.pt")
+
+model = CNN().to(device)
+optimizer = optim.SGD(model.parameters(), lr=args.lr)
+
+for epoch in range(1, args.epochs + 1):
+    train(args, model, device, federated_train_loader, optimizer, epoch)
+    test(args, model, device, test_loader)
+
+if (args.save_model):
+    torch.save(model.state_dict(), "mnist_cnn.pt")
