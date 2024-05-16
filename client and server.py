@@ -34,3 +34,18 @@ class leader_client(fl_client):
             raise TypeError("The input vector must be a numpy ndarray.")
         random_ints = np.array([self.generate_random_int() for _ in range(len(vector))])
         return vector + random_ints
+
+class fl_server(syft.VirtualWorker):
+    def __init__(self, n, q, qnp):
+        self.n = n
+        self.q = q
+        self.qnp = qnp
+        self.sum_pk0 = Poly(n, q, qnp)
+        self.sum_pk1 = Poly(n, q, qnp)
+
+    def add_public_key(self, pk):
+        self.sum_pk0 = self.sum_pk0 + pk[0]
+        self.sum_pk1 = self.sum_pk1 + pk[1]
+
+    def get_aggregated_public_key(self):
+        return [self.sum_pk0, self.sum_pk1]
