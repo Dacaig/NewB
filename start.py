@@ -22,7 +22,7 @@ disable_progress_bar()
 
 NUM_CLIENTS = 5
 BATCH_SIZE = 32
-
+torch.backends.cudnn.enabled = False
 
 def load_datasets():
     fds = FederatedDataset(dataset="cifar10", partitioners={"train": NUM_CLIENTS})
@@ -50,7 +50,7 @@ def load_datasets():
         trainloaders.append(DataLoader(partition["train"], batch_size=BATCH_SIZE))
         valloaders.append(DataLoader(partition["test"], batch_size=BATCH_SIZE))
     testset = fds.load_split("test").with_transform(apply_transforms)
-    testloader = DataLoader(testset, batch_size=BATCH_SIZE)
+    testloader = DataLoader(testset, batch_size=BATCH_SIZE, num_workers=0)
     return trainloaders, valloaders, testloader
 
 
