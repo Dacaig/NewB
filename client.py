@@ -80,8 +80,8 @@ def test(net, testloader):
 
 def load_datasets(partition_id):
     fds = FederatedDataset(dataset="cifar10", partitioners={"train": NUM_CLIENTS})
-    partition=fds.load_split(partition_id)
-    partition_train_test=partition.train_test_split(test_size=0.2)
+    partition1=fds.load_split(partition_id)
+    partition_train_test1=partition.train_test_split(test_size=0.2)
     pytorch_transforms=transforms.Compose(
         [transforms.ToTensor(),transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
@@ -92,17 +92,7 @@ def load_datasets(partition_id):
         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
         return batch
 
-partition_train_test=partition_train_test.with_transform(apply_transforms)
-
+partition_train_test1=partition_train_test1.with_transform(apply_transforms)
+trainloader=DataLoader(partition_train_test1["train"], batch_size=BATCH_SIZE, shuffle=True)
+testloader=DataLoader(partition_train_test1["test"], batch_size=BATCH_SIZE)
     # Create train/val for each partition and wrap it into DataLoader
-    trainloaders = []
-    valloaders = []
-    for partition_id in range(NUM_CLIENTS):
-        partition = fds.load_partition(partition_id, "train")
-        partition = partition.with_transform(apply_transforms)
-        partition = partition.train_test_split(train_size=0.8, seed=42)
-        trainloaders.append(DataLoader(partition["train"], batch_size=BATCH_SIZE))
-        valloaders.append(DataLoader(partition["test"], batch_size=BATCH_SIZE))
-    testset = fds.load_split("test").with_transform(apply_transforms)
-    testloader = DataLoader(testset, batch_size=BATCH_SIZE, num_workers=0)
-    return trainloaders, valloaders, testloader
