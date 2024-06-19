@@ -10,14 +10,16 @@ import torchvision
 import torchvision.transforms as transforms
 from datasets.utils.logging import disable_progress_bar
 from torch.utils.data import DataLoader
-
+import argparse
 import flwr as fl
 from flwr.common import Metrics
 from flwr_datasets import FederatedDataset
 
-DEVICE: str = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLIENTS=5
 BATCH_SIZE=32
+
+
 class Net(nn.Module):
     def __init__(self) -> None:
         super(Net, self).__init__()
@@ -80,8 +82,8 @@ def test(net, testloader):
 
 def load_datasets(partition_id):
     fds = FederatedDataset(dataset="cifar10", partitioners={"train": NUM_CLIENTS})
-    partition1=fds.load_split(partition_id)
-    partition_train_test1=partition.train_test_split(test_size=0.2)
+    partition=fds.load_split(partition_id)
+    partition_train_test=partition.train_test_split(test_size=0.2)
     pytorch_transforms=transforms.Compose(
         [transforms.ToTensor(),transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
@@ -92,7 +94,60 @@ def load_datasets(partition_id):
         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
         return batch
 
-partition_train_test1=partition_train_test1.with_transform(apply_transforms)
-trainloader=DataLoader(partition_train_test1["train"], batch_size=BATCH_SIZE, shuffle=True)
-testloader=DataLoader(partition_train_test1["test"], batch_size=BATCH_SIZE)
-    # Create train/val for each partition and wrap it into DataLoader
+    partition_train_test = partition_train_test.with_transform(apply_transforms)
+    trainloader = DataLoader(partition_train_test["train"], batch_size=BATCH_SIZE, shuffle=True)
+    testloader = DataLoader(partition_train_test["test"], batch_size=BATCH_SIZE)
+
+    return trainloader, testloader
+
+
+
+
+
+
+parser=argparse.ArgumentParser(description="FlowerFL")
+parser.add_argument("--partition--id",required=True,type=int,help="Partition of the dataset")
+#parser.add_argument("--partition--id",default=partition_id,type=int)
+
+net=Net().to(DEVICE)
+
+
+trainloader,testloader=load_datasets(partition_id=id)
+
+
+
+def set_parameters(net, parameters: List[np.ndarray]):
+    params_dict = zip(net.state_dict().keys(), parameters)
+    state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
+    net.load_state_dict(state_dict, strict=True)
+
+
+def get_parameters(net) -> List[np.ndarray]:
+    return [val.cpu().numpy() for _, val in net.state_dict().items()]
+
+
+class FlowerClient(fl.client.NumPyClient):
+    def set_parameters(net, parameters: List[np.ndarray]):
+        params_dict = zip(net.state_dict().keys(), parameters)
+        state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
+        net.load_state_dict(state_dict, strict=True)
+
+    def get_parameters(self, config):
+        return [val.cpu().numpy() for _, val in net.state_dict().items()]
+
+    def fit(self, parameters, config):
+        self.set_parameters(parameters)
+        train(net,trainloader,epochs=1)
+        return self.get_parameters(config=()),len(trainloader.dataset),{}
+
+
+    def evaluate(self, parameters, config):
+        self.set_parameters( parameters)
+        loss, accuracy = test(net,testloader)
+        return loss,int(testloader.dataset),{"accuracy":accuracy}
+
+
+fl.client.start_client(
+    server_address="127.0.0.1:8080",
+    client=FlowerClient(net,trainloader,testloader).to_client()
+)
