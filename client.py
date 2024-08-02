@@ -1,143 +1,132 @@
+import argparse
+import warnings
 from collections import OrderedDict
-from typing import List, Tuple
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-import numpy as np
+
+from flwr.client import NumPyClient, ClientApp
+from flwr_datasets import FederatedDataset
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
-from datasets.utils.logging import disable_progress_bar
 from torch.utils.data import DataLoader
-import argparse
-import flwr as fl
-from flwr.common import Metrics
-from flwr_datasets import FederatedDataset
+from torchvision.transforms import Compose, Normalize, ToTensor
+from tqdm import tqdm
+from model import *
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_CLIENTS=5
-BATCH_SIZE=32
+#Added import content
+import tensorflow.keras as keras
+
+# #############################################################################
+# 1. Regular PyTorch pipeline: nn.Module, train, test, and DataLoader
+# #############################################################################
+
+warnings.filterwarnings("ignore", category=UserWarning)
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class Net(nn.Module):
-    def __init__(self) -> None:
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-def train(net, trainloader, epochs: int, verbose=False):
-    """Train the network on the training set."""
+def train(net, trainloader, epochs):
+    """Train the model on the training set."""
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(net.parameters())
-    net.train()
-    for epoch in range(epochs):
-        correct, total, epoch_loss = 0, 0, 0.0
-        for batch in trainloader:
-            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    for _ in range(epochs):
+        for batch in tqdm(trainloader, "Training"):
+            images = batch["img"]
+            labels = batch["label"]
             optimizer.zero_grad()
-            outputs = net(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
+            criterion(net(images.to(DEVICE)), labels.to(DEVICE)).backward()
             optimizer.step()
-            # Metrics
-            epoch_loss += loss
-            total += labels.size(0)
-            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
-        epoch_loss /= len(trainloader.dataset)
-        epoch_acc = correct / total
-        if verbose:
-            print(f"Epoch {epoch+1}: train loss {epoch_loss}, accuracy {epoch_acc}")
 
 
 def test(net, testloader):
-    """Evaluate the network on the entire test set."""
+    """Validate the model on the test set."""
     criterion = torch.nn.CrossEntropyLoss()
-    correct, total, loss = 0, 0, 0.0
-    net.eval()
+    correct, loss = 0, 0.0
     with torch.no_grad():
-        for batch in testloader:
-            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
+        for batch in tqdm(testloader, "Testing"):
+            images = batch["img"].to(DEVICE)
+            labels = batch["label"].to(DEVICE)
             outputs = net(images)
             loss += criterion(outputs, labels).item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    loss /= len(testloader.dataset)
-    accuracy = correct / total
+            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
+    accuracy = correct / len(testloader.dataset)
     return loss, accuracy
 
-def load_datasets(partition_id):
-    fds = FederatedDataset(dataset="cifar10", partitioners={"train": NUM_CLIENTS})
-    partition=fds.load_split(partition_id)
-    partition_train_test=partition.train_test_split(test_size=0.2)
-    pytorch_transforms=transforms.Compose(
-        [transforms.ToTensor(),transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+def load_data(partition_id):
+    """Load mnist data."""
+    (x_train, y_train), (x_valid, y_valid) = keras.datasets.mnist.load_data()
+    x_train, y_train, x_valid, y_valid = map(
+        torch.tensor, (x_train, y_train, x_valid, y_valid)
+    )
+
 
     def apply_transforms(batch):
-        # Instead of passing transforms to CIFAR10(..., transform=transform)
-        # we will use this function to dataset.with_transform(apply_transforms)
-        # The transforms object is exactly the same
+        """Apply transforms to the partition from FederatedDataset."""
         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
         return batch
 
     partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(partition_train_test["train"], batch_size=BATCH_SIZE, shuffle=True)
-    testloader = DataLoader(partition_train_test["test"], batch_size=BATCH_SIZE)
-
+    trainloader = DataLoader(partition_train_test["train"], batch_size=32, shuffle=True)
+    testloader = DataLoader(partition_train_test["test"], batch_size=32)
     return trainloader, testloader
 
 
+# #############################################################################
+# 2. Federation of the pipeline with Flower
+# #############################################################################
+
+# Get partition id
+parser = argparse.ArgumentParser(description="Flower")
+parser.add_argument(
+    "--partition-id",
+    choices=[0, 1],
+    default=0,
+    type=int,
+    help="Partition of the dataset divided into 2 iid partitions created artificially.",
+)
+partition_id = parser.parse_known_args()[0].partition_id
+
+# Load model and data (simple CNN, CIFAR-10)
+net = Net().to(DEVICE)
+trainloader, testloader = load_data(partition_id=partition_id)
 
 
-
-
-parser=argparse.ArgumentParser(description="FlowerFL")
-parser.add_argument("--partition--id",required=True,type=int,help="Partition of the dataset")
-#parser.add_argument("--partition--id",default=partition_id,type=int)
-
-net=Net().to(DEVICE)
-
-
-trainloader,testloader=load_datasets(partition_id=id)
-
-
-
-class FlowerClient(fl.client.NumPyClient):
-    def set_parameters(net, parameters: List[np.ndarray]):
-        params_dict = zip(net.state_dict().keys(), parameters)
-        state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
-        net.load_state_dict(state_dict, strict=True)
-
+# Define Flower client
+class FlowerClient(NumPyClient):
     def get_parameters(self, config):
         return [val.cpu().numpy() for _, val in net.state_dict().items()]
 
+    def set_parameters(self, parameters):
+        params_dict = zip(net.state_dict().keys(), parameters)
+        state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+        net.load_state_dict(state_dict, strict=True)
+
     def fit(self, parameters, config):
         self.set_parameters(parameters)
-        train(net,trainloader,epochs=1)
-        return self.get_parameters(config=()),len(trainloader.dataset),{}
-
+        train(net, trainloader, epochs=1)
+        return self.get_parameters(config={}), len(trainloader.dataset), {}
 
     def evaluate(self, parameters, config):
-        self.set_parameters( parameters)
-        loss, accuracy = test(net,testloader)
-        return loss,int(testloader.dataset),{"accuracy":accuracy}
+        self.set_parameters(parameters)
+        loss, accuracy = test(net, testloader)
+        return loss, len(testloader.dataset), {"accuracy": accuracy}
 
 
-fl.client.start_client(
-    server_address="127.0.0.1:8080",
-    client=FlowerClient(net,trainloader,testloader).to_client()
+def client_fn(cid: str):
+    """Create and return an instance of Flower `Client`."""
+    return FlowerClient().to_client()
+
+
+# Flower ClientApp
+app = ClientApp(
+    client_fn=client_fn,
 )
+
+
+# Legacy mode
+if __name__ == "__main__":
+    from flwr.client import start_client
+
+    start_client(
+        server_address="127.0.0.1:8080",
+        client=FlowerClient().to_client(),
+    )
